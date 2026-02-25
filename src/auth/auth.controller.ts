@@ -14,6 +14,11 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiOkResponse,
+  ApiCreatedResponse,
+  ApiBadRequestResponse,
+  ApiUnauthorizedResponse,
+  ApiNotFoundResponse,
 } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dtos/register.dto';
@@ -21,45 +26,53 @@ import { LoginDto } from './dtos/login.dto';
 import { VerifyEmailDto } from './dtos/verify-email.dto';
 import { ResendVerificationDto } from './dtos/resend-verification.dto';
 import { RefreshTokenDto } from './dtos/refresh-token.dto';
-import { AuthResponse } from './interfaces/auth.interface';
+import { AuthResponseDto } from './dtos/auth-response.dto';
 
-@ApiTags('Auth')
+@ApiTags('auth')
+@ApiBearerAuth()
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
   @ApiOperation({ summary: 'Register a new user' })
-  @ApiResponse({
-    status: 201,
+  @ApiCreatedResponse({
     description: 'User registered successfully',
-    type: Object,
+    type: AuthResponseDto,
   })
-  @ApiResponse({
-    status: 400,
+  @ApiBadRequestResponse({
     description: 'Invalid input or user already exists',
   })
-  async register(@Body() registerDto: RegisterDto): Promise<AuthResponse> {
+  async register(@Body() registerDto: RegisterDto): Promise<AuthResponseDto> {
     return this.authService.register(registerDto);
   }
 
   @Post('login')
   @ApiOperation({ summary: 'Login with email and password' })
-  @ApiResponse({ status: 200, description: 'Login successful', type: Object })
-  @ApiResponse({ status: 401, description: 'Invalid credentials' })
+  @ApiOkResponse({
+    description: 'Login successful',
+    type: AuthResponseDto,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Invalid credentials',
+  })
   async login(
     @Body() loginDto: LoginDto,
     @Request() req,
-  ): Promise<AuthResponse> {
+  ): Promise<AuthResponseDto> {
     return this.authService.login(loginDto, req);
   }
 
   @UseGuards(AuthGuard('jwt'))
-  @ApiBearerAuth('JWT-auth')
   @Get('profile')
   @ApiOperation({ summary: 'Get current user profile (JWT required)' })
-  @ApiResponse({ status: 200, description: 'Profile retrieved successfully' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiOkResponse({
+    description: 'Profile retrieved successfully',
+    type: Object,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Unauthorized',
+  })
   async getProfile(@Request() req) {
     return req.user;
   }
@@ -67,8 +80,12 @@ export class AuthController {
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify email with token' })
-  @ApiResponse({ status: 200, description: 'Email verified successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid or expired token' })
+  @ApiOkResponse({
+    description: 'Email verified successfully',
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid or expired token',
+  })
   async verifyEmail(
     @Body() verifyEmailDto: VerifyEmailDto,
   ): Promise<{ message: string }> {
@@ -78,8 +95,12 @@ export class AuthController {
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Resend email verification' })
-  @ApiResponse({ status: 200, description: 'Verification email sent' })
-  @ApiResponse({ status: 404, description: 'User not found' })
+  @ApiOkResponse({
+    description: 'Verification email sent',
+  })
+  @ApiNotFoundResponse({
+    description: 'User not found',
+  })
   async resendVerification(
     @Body() resendVerificationDto: ResendVerificationDto,
   ): Promise<{ message: string }> {
@@ -89,15 +110,16 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refresh access token' })
-  @ApiResponse({
-    status: 200,
+  @ApiOkResponse({
     description: 'Token refreshed successfully',
-    type: Object,
+    type: AuthResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Invalid refresh token' })
+  @ApiUnauthorizedResponse({
+    description: 'Invalid refresh token',
+  })
   async refreshToken(
     @Body() refreshTokenDto: RefreshTokenDto,
-  ): Promise<AuthResponse> {
+  ): Promise<AuthResponseDto> {
     return this.authService.refreshToken(refreshTokenDto);
   }
 }

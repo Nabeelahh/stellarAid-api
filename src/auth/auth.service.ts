@@ -19,7 +19,8 @@ import { LoginDto } from './dtos/login.dto';
 import { VerifyEmailDto } from './dtos/verify-email.dto';
 import { ResendVerificationDto } from './dtos/resend-verification.dto';
 import { RefreshTokenDto } from './dtos/refresh-token.dto';
-import { AuthResponse, JwtPayload } from './interfaces/auth.interface';
+import { JwtPayload } from './interfaces/auth.interface';
+import { AuthResponseDto } from './dtos/auth-response.dto';
 import { User, UserRole, KYCStatus } from '../users/entities/user.entity';
 import { ChangePasswordDto } from '../users/dtos/change-password.dto';
 import { SubmitKYCDto } from '../users/dtos/submit-kyc.dto';
@@ -88,7 +89,7 @@ export class AuthService {
     return { message: 'Password changed successfully' };
   }
 
-  async register(registerDto: RegisterDto): Promise<AuthResponse> {
+  async register(registerDto: RegisterDto): Promise<AuthResponseDto> {
     const existingUser = await this.userRepository.findOne({
       where: { email: registerDto.email },
     });
@@ -116,7 +117,7 @@ export class AuthService {
     return this.generateTokens(user);
   }
 
-  async login(loginDto: LoginDto, request?: any): Promise<AuthResponse> {
+  async login(loginDto: LoginDto, request?: any): Promise<AuthResponseDto> {
     const user = await this.userRepository.findOne({
       where: { email: loginDto.email },
     });
@@ -140,7 +141,7 @@ export class AuthService {
     return this.generateTokens(user);
   }
 
-  async generateTokens(user: User): Promise<AuthResponse> {
+  async generateTokens(user: User): Promise<AuthResponseDto> {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
@@ -424,7 +425,7 @@ export class AuthService {
     return { message: `KYC status updated to ${updateDto.status}` };
   }
 
-  async refreshToken(refreshTokenDto: RefreshTokenDto): Promise<AuthResponse> {
+  async refreshToken(refreshTokenDto: RefreshTokenDto): Promise<AuthResponseDto> {
     try {
       // Verify the refresh token
       const payload = this.jwtService.verify(refreshTokenDto.refreshToken, {
