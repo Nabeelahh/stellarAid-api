@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { Donation } from './donation.entity';
+import { ProjectImage } from './project-image.entity';
 import { ProjectHistory } from './project-history.entity';
 import { ProjectCategory } from 'src/common/enums/project-category.enum';
 import { ProjectStatus } from 'src/common/enums/project-status.enum';
@@ -70,6 +71,9 @@ export class Project {
   @ManyToOne(() => User, { eager: false, onDelete: 'CASCADE' })
   @JoinColumn({ name: 'creatorId' })
   creator: User;
+
+  @OneToMany(() => ProjectImage, (image) => image.project, { cascade: true })
+  images: ProjectImage[];
 
   @OneToMany(() => Donation, (donation) => donation.project, { cascade: true })
   donations: Donation[];
