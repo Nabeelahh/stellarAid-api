@@ -9,6 +9,7 @@ import { ProjectsService } from 'src/projects/providers/projects.service';
 import { ImageUploadService } from 'src/projects/services/image-upload.service';
 import { SearchService } from 'src/projects/services/search.service';
 import { AnalyticsService } from 'src/projects/services/analytics.service';
+import { DonationsService } from 'src/donations/providers/donations.service';
 
 describe('ProjectsController', () => {
   let controller: ProjectsController;
@@ -40,6 +41,11 @@ describe('ProjectsController', () => {
     getCreatorAnalytics: jest.fn(),
   };
 
+  // Mock DonationsService
+  const mockDonationsService = {
+    findDonationsByProject: jest.fn(),
+  };
+
   // Mock project data
   const mockProjects: Partial<Project>[] = [
     {
@@ -66,7 +72,7 @@ describe('ProjectsController', () => {
       id: '550e8400-e29b-41d4-a716-446655440002',
       title: 'Healthcare Initiative',
       description: 'Providing medical supplies to underserved communities',
-      category: ProjectCategory.HEALTHCARE,
+      category: ProjectCategory.HEALTH,
       status: ProjectStatus.APPROVED,
       goalAmount: 15000,
       fundsRaised: 8000,
@@ -103,6 +109,10 @@ describe('ProjectsController', () => {
         {
           provide: AnalyticsService,
           useValue: mockAnalyticsService,
+        },
+        {
+          provide: DonationsService,
+          useValue: mockDonationsService,
         },
       ],
     }).compile();
@@ -271,7 +281,7 @@ describe('ProjectsController', () => {
 
       it('should return search results without suggestions', async () => {
         const searchDto = {
-          category: ProjectCategory.HEALTHCARE,
+          category: ProjectCategory.HEALTH,
           limit: 5,
           offset: 0,
         };
@@ -315,7 +325,7 @@ describe('ProjectsController', () => {
           totalProjects: 100,
           categoryDistribution: {
             [ProjectCategory.EDUCATION]: 40,
-            [ProjectCategory.HEALTHCARE]: 30,
+            [ProjectCategory.HEALTH]: 30,
             [ProjectCategory.ENVIRONMENT]: 30,
           },
           statusDistribution: {
