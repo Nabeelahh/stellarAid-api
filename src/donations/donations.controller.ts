@@ -28,6 +28,11 @@ import { CreateDonationDto } from './dto/create-donation.dto';
 import { UpdateDonationDto } from './dto/update-donation.dto';
 import { DonationResponseDto } from './dto/donation-response.dto';
 import { WebhookDonationDto, WebhookResponseDto } from './dto/webhook.dto';
+import {
+  LeaderboardQueryDto,
+  LeaderboardScope,
+} from './dto/leaderboard-query.dto';
+import { LeaderboardResponseDto } from './dto/leaderboard-response.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
@@ -168,6 +173,57 @@ export class DonationsController {
   @ApiResponse({ status: 200, description: 'Donation count' })
   getCountForProject(@Param('projectId', ParseUUIDPipe) projectId: string) {
     return this.donationsService.getDonationCountForProject(projectId);
+  }
+
+  @Get('leaderboard')
+  @Public()
+  @ApiOperation({
+    summary: 'Get top donors leaderboard',
+    description:
+      'Returns ranked list of top donors. Supports global leaderboard or project-specific. Respects user anonymity preferences. Results are cached for 5 minutes.',
+  })
+  @ApiResponse({
+    status: 200,
+    type: LeaderboardResponseDto,
+    description: 'Leaderboard retrieved successfully',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - Project ID required for project scope',
+  })
+  @ApiQuery({
+    name: 'scope',
+    required: false,
+    enum: LeaderboardScope,
+    description: 'Scope of leaderboard: global or project',
+  })
+  @ApiQuery({
+    name: 'projectId',
+    required: false,
+    type: String,
+    description: 'Project ID for project-specific leaderboard',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Number of results (1-100, default 100)',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number (default 1)',
+  })
+  async getLeaderboard(
+    @Query() query: LeaderboardQueryDto,
+  ): Promise<LeaderboardResponseDto> {
+    return this.donationsService.getLeaderboard(
+      query.scope || LeaderboardScope.GLOBAL,
+      query.projectId,
+      query.page,
+      query.limit,
+    );
   }
 
   @Post('webhook')

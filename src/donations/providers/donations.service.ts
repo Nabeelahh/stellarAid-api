@@ -24,6 +24,11 @@ import {
   UserDonationItemDto,
   UserDonationSummaryDto,
 } from '../dto/user-donation-history-response.dto';
+import {
+  LeaderboardResponseDto,
+  LeaderboardDonorDto,
+} from '../dto/leaderboard-response.dto';
+import { LeaderboardScope } from '../dto/leaderboard-query.dto';
 import { StellarBlockchainService } from '../../common/services/stellar-blockchain.service';
 import { MailService } from '../../mail/mail.service';
 
@@ -33,6 +38,21 @@ const processedWebhooks = new Map<
   { donationId: string; processedAt: Date }
 >();
 const WEBHOOK_DEDUP_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// In-memory cache for leaderboard
+interface LeaderboardCacheEntry {
+  data: LeaderboardResponseDto;
+  timestamp: number;
+}
+const leaderboardCache = new Map<string, LeaderboardCacheEntry>();
+const LEADERBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Asset conversion rates (simplified - in production, use a price oracle)
+const ASSET_CONVERSION_RATES: Record<string, number> = {
+  XLM: 0.12, // Example rate: 1 XLM = $0.12 USD
+  USDC: 1.0, // 1 USDC = $1.00 USD
+  USD: 1.0,
+};
 
 @Injectable()
 export class DonationsService {
@@ -710,5 +730,135 @@ export class DonationsService {
         processedWebhooks.delete(key);
       }
     }
+  }
+
+  /**
+   * Get leaderboard of top donors
+   * Supports global and project-specific leaderboards
+   * Respects user anonymity preferences
+   */
+  async getLeaderboard(
+    scope: LeaderboardScope,
+    projectId: string | undefined,
+    page: number = 1,
+    limit: number = 100,
+  ): Promise<LeaderboardResponseDto> {
+    // Validate projectId for project scope
+    if (scope === LeaderboardScope.PROJECT && !projectId) {
+      throw new BadRequestException(
+        'Project ID is required for project-specific leaderboard',
+      );
+    }
+
+    // Generate cache key
+    const cacheKey = `${scope}:${projectId || 'global'}:page${page}:limit${limit}`;
+
+    // Check cache
+    const cached = leaderboardCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < LEADERBOARD_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    // Build query for leaderboard
+    const queryBuilder = this.donationsRepository
+      .createQueryBuilder('donation')
+      .leftJoinAndSelect('donation.donor', 'donor')
+      .select('donor.id', 'userId')
+      .addSelect('donor.firstName', 'firstName')
+      .addSelect('donor.lastName', 'lastName')
+      .addSelect('donor.avatarUrl', 'avatarUrl')
+      .addSelect('donation.isAnonymous', 'isAnonymous')
+      .addSelect('SUM(donation.amount)', 'totalAmount')
+      .addSelect('COUNT(donation.id)', 'donationCount')
+      .addSelect('COUNT(DISTINCT donation.projectId)', 'projectsSupported')
+      .where('donation.donorId IS NOT NULL')
+      .andWhere('donation.isAnonymous = :isAnonymous', { isAnonymous: false })
+      .groupBy('donor.id')
+      .addGroupBy('donor.firstName')
+      .addGroupBy('donor.lastName')
+      .addGroupBy('donor.avatarUrl')
+      .addGroupBy('donation.isAnonymous')
+      .orderBy('SUM(donation.amount)', 'DESC');
+
+    // Apply project filter if project scope
+    if (scope === LeaderboardScope.PROJECT && projectId) {
+      queryBuilder.andWhere('donation.projectId = :projectId', { projectId });
+      // For project scope, don't count distinct projects (it's always 1)
+      queryBuilder.select('donor.id', 'userId');
+      queryBuilder.addSelect('donor.firstName', 'firstName');
+      queryBuilder.addSelect('donor.lastName', 'lastName');
+      queryBuilder.addSelect('donor.avatarUrl', 'avatarUrl');
+      queryBuilder.addSelect('donation.isAnonymous', 'isAnonymous');
+      queryBuilder.addSelect('SUM(donation.amount)', 'totalAmount');
+      queryBuilder.addSelect('COUNT(donation.id)', 'donationCount');
+      queryBuilder.addSelect('1', 'projectsSupported');
+    }
+
+    // Get total count for pagination
+    const countQuery = queryBuilder.clone();
+    const totalResult = await countQuery
+      .select('COUNT(DISTINCT donor.id)', 'total')
+      .getRawOne();
+    const total = parseInt(totalResult.total, 10) || 0;
+
+    // Apply pagination
+    queryBuilder.skip((page - 1) * limit).take(limit);
+
+    // Execute query
+    const rawResults = await queryBuilder.getRawMany();
+
+    // Transform results to DTOs
+    const donors: LeaderboardDonorDto[] = rawResults.map((result, index) => {
+      const rank = (page - 1) * limit + index + 1;
+      const assetType = 'XLM'; // Default to XLM, could be enhanced to track actual asset
+      const conversionRate = ASSET_CONVERSION_RATES[assetType] || 1;
+      const totalAmountUsd = parseFloat(result.totalAmount) * conversionRate;
+
+      return {
+        rank,
+        userId: result.userId,
+        displayName: `${result.firstName || ''} ${result.lastName || ''}`.trim() || 'Anonymous',
+        avatarUrl: result.avatarUrl || null,
+        totalAmountUsd: Math.round(totalAmountUsd * 100) / 100,
+        donationCount: parseInt(result.donationCount, 10) || 0,
+        projectsSupported: parseInt(result.projectsSupported, 10) || 1,
+        isAnonymous: result.isAnonymous === 'true',
+      };
+    });
+
+    const response: LeaderboardResponseDto = {
+      data: donors,
+      total,
+      page,
+      limit,
+      scope,
+      projectId: projectId || null,
+      generatedAt: new Date(),
+    };
+
+    // Cache the result
+    leaderboardCache.set(cacheKey, {
+      data: response,
+      timestamp: Date.now(),
+    });
+
+    return response;
+  }
+
+  /**
+   * Clear leaderboard cache
+   * Can be called when new donations are made to refresh the leaderboard
+   */
+  clearLeaderboardCache(): void {
+    leaderboardCache.clear();
+    this.logger.log('Leaderboard cache cleared');
+  }
+
+  /**
+   * Get asset conversion rate to USD
+   * In production, this should call a price oracle service
+   */
+  getAssetConversionRate(assetType: string): number {
+    return ASSET_CONVERSION_RATES[assetType] || 1;
   }
 }
