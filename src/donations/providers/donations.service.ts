@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -12,6 +13,7 @@ import { User } from '../../users/entities/user.entity';
 import { CreateDonationDto } from '../dto/create-donation.dto';
 import { UpdateDonationDto } from '../dto/update-donation.dto';
 import { DonationResponseDto } from '../dto/donation-response.dto';
+import { WebhookDonationDto, WebhookResponseDto } from '../dto/webhook.dto';
 import {
   ProjectDonationsResponseDto,
   ProjectDonationItemDto,
@@ -25,8 +27,13 @@ import {
 import { StellarBlockchainService } from '../../common/services/stellar-blockchain.service';
 import { MailService } from '../../mail/mail.service';
 
+// In-memory store for webhook deduplication (in production, use Redis)
+const processedWebhooks = new Map<string, { donationId: string; processedAt: Date }>();
+const WEBHOOK_DEDUP_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 @Injectable()
 export class DonationsService {
+  private readonly logger = new Logger(DonationsService.name);
   constructor(
     @InjectRepository(Donation)
     private donationsRepository: Repository<Donation>,
@@ -461,5 +468,200 @@ export class DonationsService {
         ? new Date(result.lastDonationDate)
         : null,
     };
+  }
+
+  /**
+   * Process a webhook donation notification
+   * Handles duplicate webhooks gracefully and verifies on blockchain
+   */
+  async processWebhookDonation(
+    webhookDto: WebhookDonationDto,
+    donorId?: string,
+  ): Promise<WebhookResponseDto> {
+    const { transactionHash, projectId, amount, assetType = 'XLM', isAnonymous = false, webhookId } = webhookDto;
+
+    try {
+      // 1. Check for duplicate webhook using webhookId or transaction hash
+      const dedupKey = webhookId || transactionHash;
+      const existingWebhook = processedWebhooks.get(dedupKey);
+      
+      if (existingWebhook) {
+        // Check if donation still exists
+        const existingDonation = await this.donationsRepository.findOne({
+          where: { id: existingWebhook.donationId },
+        });
+        
+        if (existingDonation) {
+          this.logger.log(`Duplicate webhook detected: ${dedupKey}`);
+          return {
+            success: true,
+            message: 'Donation already processed',
+            donationId: existingDonation.id,
+            duplicate: true,
+          };
+        }
+        
+        // Clean up stale entry
+        processedWebhooks.delete(dedupKey);
+      }
+
+      // 2. Check if project exists
+      const project = await this.projectRepository.findOne({
+        where: { id: projectId },
+      });
+
+      if (!project) {
+        throw new NotFoundException(`Project with ID ${projectId} not found`);
+      }
+
+      // 3. Check for duplicate transaction hash in database
+      const existingDonation = await this.donationsRepository.findOne({
+        where: { transactionHash },
+      });
+
+      if (existingDonation) {
+        // Mark webhook as processed
+        processedWebhooks.set(dedupKey, {
+          donationId: existingDonation.id,
+          processedAt: new Date(),
+        });
+        
+        return {
+          success: true,
+          message: 'Donation already exists with this transaction hash',
+          donationId: existingDonation.id,
+          duplicate: true,
+        };
+      }
+
+      // 4. Verify transaction on Stellar blockchain with detailed validation
+      const verificationResult = await this.stellarBlockchainService.verifyTransaction(
+        transactionHash,
+        amount,
+        assetType,
+      );
+
+      if (!verificationResult.isValid) {
+        throw new BadRequestException(
+          `Transaction verification failed: ${verificationResult.error || 'Unknown error'}`,
+        );
+      }
+
+      // 5. Create and save donation
+      const donation = this.donationsRepository.create({
+        projectId,
+        donorId: isAnonymous ? null : donorId || null,
+        amount,
+        assetType,
+        transactionHash,
+        isAnonymous,
+      });
+
+      const savedDonation = await this.donationsRepository.save(donation);
+
+      // 6. Update project funds_raised and donationCount atomically
+      await this.projectRepository.update(
+        { id: projectId },
+        {
+          fundsRaised: () => `CAST(fundsRaised + ${Number(amount)} AS decimal(18,7))`,
+          donationCount: () => 'donationCount + 1',
+        },
+      );
+
+      // 7. Update progress
+      const updatedProject = await this.projectRepository.findOne({
+        where: { id: projectId },
+      });
+
+      if (updatedProject) {
+        const goalAmount = Number(updatedProject.goalAmount) || 1;
+        const fundsRaised = Number(updatedProject.fundsRaised) || 0;
+        const progress = Math.min((fundsRaised / goalAmount) * 100, 100);
+
+        await this.projectRepository.update(
+          { id: projectId },
+          {
+            progress: Math.round(progress * 100) / 100,
+          },
+        );
+      }
+
+      // 8. Mark webhook as processed
+      processedWebhooks.set(dedupKey, {
+        donationId: savedDonation.id,
+        processedAt: new Date(),
+      });
+
+      // 9. Send confirmation email to donor (if not anonymous and donorId available)
+      if (!isAnonymous && donorId) {
+        this.sendDonationConfirmationEmail(donorId, savedDonation, project).catch((error) => {
+          this.logger.error('Error sending donation confirmation email:', error);
+        });
+      }
+
+      // 10. Clean old entries from deduplication cache periodically
+      this.cleanupOldWebhookEntries();
+
+      return {
+        success: true,
+        message: 'Donation processed successfully',
+        donationId: savedDonation.id,
+        duplicate: false,
+      };
+    } catch (error) {
+      // Re-throw known exceptions
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ConflictException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      // Handle database-specific errors
+      if (error.code === '23505') {
+        // PostgreSQL unique violation - transaction hash already exists
+        // Still return success since donation was created
+        const existingDonation = await this.donationsRepository.findOne({
+          where: { transactionHash },
+        });
+        
+        if (existingDonation) {
+          // Use transactionHash as dedup key if webhookId not available
+          const dedupKeyForCatch = webhookDto.webhookId || transactionHash;
+          processedWebhooks.set(dedupKeyForCatch, {
+            donationId: existingDonation.id,
+            processedAt: new Date(),
+          });
+          
+          return {
+            success: true,
+            message: 'Donation already exists with this transaction hash',
+            donationId: existingDonation.id,
+            duplicate: true,
+          };
+        }
+      }
+
+      if (error.code === '23503') {
+        // PostgreSQL foreign key violation
+        throw new BadRequestException('Invalid project ID');
+      }
+
+      this.logger.error('Error processing webhook donation:', error);
+      throw new BadRequestException('Failed to process donation webhook');
+    }
+  }
+
+  /**
+   * Clean up old entries from webhook deduplication cache
+   */
+  private cleanupOldWebhookEntries(): void {
+    const now = Date.now();
+    for (const [key, value] of processedWebhooks.entries()) {
+      if (now - value.processedAt.getTime() > WEBHOOK_DEDUP_TTL_MS) {
+        processedWebhooks.delete(key);
+      }
+    }
   }
 }

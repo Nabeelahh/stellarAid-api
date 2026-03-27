@@ -10,7 +10,10 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  HttpException,
   UseGuards,
+  Headers,
+  Req,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -19,18 +22,24 @@ import {
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
+import type { Request as ExpressRequest } from 'express';
 import { DonationsService } from './providers/donations.service';
 import { CreateDonationDto } from './dto/create-donation.dto';
 import { UpdateDonationDto } from './dto/update-donation.dto';
 import { DonationResponseDto } from './dto/donation-response.dto';
+import { WebhookDonationDto, WebhookResponseDto } from './dto/webhook.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
+import { WebhookSignatureService } from '../common/services/webhook-signature.service';
 
 @ApiTags('Donations')
 @Controller('donations')
 export class DonationsController {
-  constructor(private readonly donationsService: DonationsService) {}
+  constructor(
+    private readonly donationsService: DonationsService,
+    private readonly webhookSignatureService: WebhookSignatureService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard)
@@ -146,6 +155,39 @@ export class DonationsController {
   @ApiResponse({ status: 200, description: 'Donation count' })
   getCountForProject(@Param('projectId', ParseUUIDPipe) projectId: string) {
     return this.donationsService.getDonationCountForProject(projectId);
+  }
+
+  @Post('webhook')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Webhook endpoint for real-time donation notifications' })
+  @ApiResponse({ status: 200, type: WebhookResponseDto, description: 'Webhook processed successfully' })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid payload or signature' })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid webhook signature' })
+  async handleWebhook(
+    @Body() webhookDto: WebhookDonationDto,
+    @Headers() headers: Record<string, string | string[]>,
+    @Req() req: ExpressRequest,
+  ): Promise<WebhookResponseDto> {
+    // Get raw body for signature validation
+    const rawBody = (req as any).rawBody as string || JSON.stringify(webhookDto);
+    
+    // Extract signature and timestamp from headers
+    const { signature, timestamp } = this.webhookSignatureService.extractHeaders(headers);
+    
+    // Validate webhook signature
+    const isValidSignature = this.webhookSignatureService.validateSignature(
+      rawBody,
+      signature,
+      timestamp,
+    );
+    
+    if (!isValidSignature) {
+      throw new HttpException('Invalid webhook signature', HttpStatus.UNAUTHORIZED);
+    }
+    
+    // Process the webhook donation
+    return this.donationsService.processWebhookDonation(webhookDto);
   }
 }
 

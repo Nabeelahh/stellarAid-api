@@ -1,6 +1,16 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+// Cache for verification results
+const verificationCache = new Map<string, { result: TransactionVerificationResult; timestamp: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Supported asset types
+const SUPPORTED_ASSETS = ['XLM', 'USDC', 'NGNT'];
+
+// Known Stellar addresses for the platform (should be configured)
+const PLATFORM_DISTRIBUTING_ADDRESSES = new Set<string>();
+
 interface StellarTransaction {
   id: string;
   envelope_xdr: string;
@@ -20,6 +30,10 @@ interface StellarTransaction {
 interface TransactionVerificationResult {
   isValid: boolean;
   transaction?: StellarTransaction;
+  amount?: number;
+  asset?: string;
+  sourceAccount?: string;
+  destinationAccount?: string;
   error?: string;
 }
 
@@ -36,15 +50,36 @@ export class StellarBlockchainService {
     );
     this.stellarNetwork = this.configService.get<string>('STELLAR_NETWORK', 'TESTNET');
 
+    // Load platform distributing addresses from config
+    const platformAddresses = this.configService.get<string>('STELLAR_PLATFORM_ADDRESSES', '');
+    if (platformAddresses) {
+      platformAddresses.split(',').forEach((addr) => PLATFORM_DISTRIBUTING_ADDRESSES.add(addr.trim()));
+    }
+
     this.logger.log(`Initialized with Horizon URL: ${this.horizonUrl}`);
   }
 
   /**
    * Verify a transaction hash exists on the Stellar blockchain
    * @param transactionHash - The transaction hash to verify (64 hex characters)
+   * @param expectedAmount - Optional expected amount to validate
+   * @param expectedAsset - Optional expected asset type to validate
+   * @param expectedDestination - Optional expected destination address
    * @returns TransactionVerificationResult with verification status
    */
-  async verifyTransaction(transactionHash: string): Promise<TransactionVerificationResult> {
+  async verifyTransaction(
+    transactionHash: string,
+    expectedAmount?: number,
+    expectedAsset?: string,
+    expectedDestination?: string,
+  ): Promise<TransactionVerificationResult> {
+    // Check cache first
+    const cachedResult = this.getCachedResult(transactionHash);
+    if (cachedResult) {
+      this.logger.log(`Using cached verification for transaction ${transactionHash}`);
+      return cachedResult;
+    }
+
     try {
       // Validate hash format before making API call
       if (!this.isValidTransactionHash(transactionHash)) {
@@ -93,11 +128,68 @@ export class StellarBlockchainService {
         };
       }
 
-      this.logger.log(`Transaction ${transactionHash} verified successfully`);
-      return {
+      // Parse transaction operations for detailed verification
+      const parsedDetails = await this.parseTransactionOperations(transactionHash);
+      if (!parsedDetails) {
+        return {
+          isValid: false,
+          error: 'Failed to parse transaction operations',
+        };
+      }
+
+      // Validate asset type if expected
+      if (expectedAsset && parsedDetails.asset) {
+        const normalizedExpected = expectedAsset.toUpperCase();
+        const normalizedActual = parsedDetails.asset.toUpperCase();
+        
+        if (normalizedExpected !== normalizedActual) {
+          this.logger.warn(`Asset mismatch: expected ${normalizedExpected}, got ${normalizedActual}`);
+          return {
+            isValid: false,
+            error: `Asset type mismatch: expected ${normalizedExpected}, got ${normalizedActual}`,
+          };
+        }
+      }
+
+      // Validate amount if expected
+      if (expectedAmount !== undefined && parsedDetails.amount !== undefined) {
+        const tolerance = 0.000001; // Allow for floating point precision
+        const amountDiff = Math.abs(parsedDetails.amount - expectedAmount);
+        
+        if (amountDiff > tolerance) {
+          this.logger.warn(`Amount mismatch: expected ${expectedAmount}, got ${parsedDetails.amount}`);
+          return {
+            isValid: false,
+            error: `Amount mismatch: expected ${expectedAmount}, got ${parsedDetails.amount}`,
+          };
+        }
+      }
+
+      // Validate destination if expected
+      if (expectedDestination && parsedDetails.destinationAccount) {
+        if (expectedDestination.toLowerCase() !== parsedDetails.destinationAccount.toLowerCase()) {
+          this.logger.warn(`Destination mismatch: expected ${expectedDestination}, got ${parsedDetails.destinationAccount}`);
+          return {
+            isValid: false,
+            error: `Destination address mismatch`,
+          };
+        }
+      }
+
+      const result: TransactionVerificationResult = {
         isValid: true,
         transaction,
+        amount: parsedDetails.amount,
+        asset: parsedDetails.asset,
+        sourceAccount: parsedDetails.sourceAccount,
+        destinationAccount: parsedDetails.destinationAccount,
       };
+
+      // Cache the result
+      this.cacheResult(transactionHash, result);
+
+      this.logger.log(`Transaction ${transactionHash} verified successfully`);
+      return result;
     } catch (error) {
       this.logger.error(
         `Error verifying transaction: ${error instanceof Error ? error.message : String(error)}`,
@@ -107,6 +199,128 @@ export class StellarBlockchainService {
         error: 'Failed to verify transaction on blockchain',
       };
     }
+  }
+
+  /**
+   * Parse transaction operations to extract payment details
+   */
+  private async parseTransactionOperations(
+    transactionHash: string,
+  ): Promise<{
+    amount?: number;
+    asset?: string;
+    sourceAccount?: string;
+    destinationAccount?: string;
+  } | null> {
+    try {
+      // Use Horizon API to get operations for this transaction
+      const response = await fetch(
+        `${this.horizonUrl}/transactions/${transactionHash}/operations`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+      const operations = data._embedded?.records || [];
+
+      // Find payment operations
+      for (const op of operations) {
+        if (op.type === 'payment' || op.type_i === 1) {
+          return {
+            amount: parseFloat(op.amount),
+            asset: op.asset || 'XLM', // Native asset is XLM
+            sourceAccount: op.from,
+            destinationAccount: op.to,
+          };
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.error('Error parsing transaction operations:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if asset type is supported
+   */
+  isSupportedAsset(asset: string): boolean {
+    return SUPPORTED_ASSETS.includes(asset.toUpperCase());
+  }
+
+  /**
+   * Get supported asset types
+   */
+  getSupportedAssets(): string[] {
+    return [...SUPPORTED_ASSETS];
+  }
+
+  /**
+   * Verify that a transaction is a payment to a specific destination
+   */
+  async verifyPaymentToDestination(
+    transactionHash: string,
+    destinationAddress: string,
+  ): Promise<TransactionVerificationResult> {
+    const result = await this.verifyTransaction(transactionHash);
+    
+    if (!result.isValid) {
+      return result;
+    }
+
+    if (result.destinationAccount?.toLowerCase() !== destinationAddress.toLowerCase()) {
+      return {
+        isValid: false,
+        error: `Transaction is not directed to the expected destination`,
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Clear verification cache
+   */
+  clearCache(): void {
+    verificationCache.clear();
+    this.logger.log('Verification cache cleared');
+  }
+
+  /**
+   * Get cached verification result if available and not expired
+   */
+  private getCachedResult(transactionHash: string): TransactionVerificationResult | null {
+    const cached = verificationCache.get(transactionHash);
+    
+    if (cached) {
+      const now = Date.now();
+      if (now - cached.timestamp < CACHE_TTL_MS) {
+        return cached.result;
+      }
+      // Remove expired cache entry
+      verificationCache.delete(transactionHash);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Cache verification result
+   */
+  private cacheResult(transactionHash: string, result: TransactionVerificationResult): void {
+    verificationCache.set(transactionHash, {
+      result,
+      timestamp: Date.now(),
+    });
   }
 
   /**
