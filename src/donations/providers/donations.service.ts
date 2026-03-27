@@ -817,7 +817,9 @@ export class DonationsService {
       return {
         rank,
         userId: result.userId,
-        displayName: `${result.firstName || ''} ${result.lastName || ''}`.trim() || 'Anonymous',
+        displayName:
+          `${result.firstName || ''} ${result.lastName || ''}`.trim() ||
+          'Anonymous',
         avatarUrl: result.avatarUrl || null,
         totalAmountUsd: Math.round(totalAmountUsd * 100) / 100,
         donationCount: parseInt(result.donationCount, 10) || 0,

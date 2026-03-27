@@ -168,6 +168,75 @@ export class MailService {
     }
   }
 
+  async sendWithdrawalRequestNotification(
+    adminEmail: string,
+    withdrawalData: {
+      projectName: string;
+      projectId: string;
+      amount: number;
+      withdrawalId: string;
+      creatorName: string;
+      requestDate: string;
+    },
+  ): Promise<void> {
+    try {
+      const templatePath = path.join(
+        this.templatesPath,
+        'withdrawal-request-notification.ejs',
+      );
+
+      // For now, create a simple text email if template doesn't exist
+      let html = `
+        <h2>New Withdrawal Request</h2>
+        <p>A new withdrawal request has been submitted for review:</p>
+        <ul>
+          <li><strong>Project:</strong> ${withdrawalData.projectName}</li>
+          <li><strong>Amount:</strong> ${withdrawalData.amount}</li>
+          <li><strong>Creator:</strong> ${withdrawalData.creatorName}</li>
+          <li><strong>Request Date:</strong> ${withdrawalData.requestDate}</li>
+        </ul>
+        <p>Please review this request in the admin panel.</p>
+        <p>Best regards,<br>${this.configService.get<string>('APP_NAME', 'StellarAid')} Team</p>
+      `;
+
+      // Try to load template if it exists
+      try {
+        const template = fs.readFileSync(templatePath, 'utf-8');
+        const templateData = {
+          ...withdrawalData,
+          appName: this.configService.get<string>('APP_NAME', 'StellarAid'),
+          currentDate: new Date().toLocaleDateString(),
+          currentYear: new Date().getFullYear(),
+          adminUrl: `${this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000')}/admin`,
+        };
+        html = await ejs.render(template, templateData);
+      } catch (templateError) {
+        this.logger.warn('Email template not found, using default format');
+      }
+
+      const mailOptions = {
+        from: this.configService.get<string>(
+          'MAIL_FROM',
+          'noreply@stellaraid.com',
+        ),
+        to: adminEmail,
+        subject: `${this.configService.get<string>('MAIL_SUBJECT_PREFIX', '[StellarAid]')} New Withdrawal Request - ${withdrawalData.projectName}`,
+        html,
+      };
+
+      await this.sendMail(mailOptions);
+      this.logger.log(
+        `Withdrawal request notification sent successfully to: ${this.maskEmail(adminEmail)}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to send withdrawal request notification to ${this.maskEmail(adminEmail)}:`,
+        error.message,
+      );
+      throw error;
+    }
+  }
+
   private async sendMail(mailOptions: any): Promise<void> {
     try {
       // Create transporter using environment configuration
