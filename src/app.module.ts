@@ -5,6 +5,7 @@ import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { CommonModule } from './common/common.module';
 import configuration from './database/config';
 import { LoggerModule } from './logger/logger.module';
 import { ProjectsModule } from './projects/projects.module';
@@ -22,6 +23,7 @@ import { AdminModule } from './admin/admin.module';
     }),
     DatabaseModule,
     LoggerModule,
+    CommonModule,
     AuthModule,
     MailModule,
     // Users module provides user-facing endpoints such as change-password
