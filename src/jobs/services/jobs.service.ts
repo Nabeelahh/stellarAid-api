@@ -1,47 +1,56 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
+import { TransactionValidationJob } from '../processors/transactions.processor';
 
 @Injectable()
-export class JobsService implements OnModuleInit {
+export class JobsService {
   private readonly logger = new Logger(JobsService.name);
 
-  constructor(@InjectQueue('projects') private readonly projectsQueue: Queue) {}
+  constructor(
+    @InjectQueue('projects') private readonly projectsQueue: Queue,
+    @InjectQueue('transactions') private readonly transactionsQueue: Queue,
+  ) {}
 
-  async onModuleInit() {
-    this.logger.log('Initializing background jobs...');
-    await this.setupRepeatableJobs();
+  // ── Existing projects jobs ────────────────────────────────────────────────
+
+  async addProjectExpiryJob(projectId: string, delay: number): Promise<void> {
+    await this.projectsQueue.add(
+      'check-expiry',
+      { projectId },
+      { delay },
+    );
+    this.logger.log(`Queued expiry check for project ${projectId} in ${delay}ms`);
   }
 
-  private async setupRepeatableJobs() {
-    // Clear existing repeatable jobs to avoid duplicates on restart
-    const repeatableJobs = await this.projectsQueue.getRepeatableJobs();
-    for (const job of repeatableJobs) {
-      await this.projectsQueue.removeRepeatableByKey(job.key);
-    }
+  // ── Transaction validation jobs ───────────────────────────────────────────
 
-    // Schedule update funding totals every 5 minutes
-    await this.projectsQueue.add(
-      'update-funding-totals',
-      {},
-      {
-        repeat: { cron: '*/5 * * * *' },
-        jobId: 'update-funding-totals-repeat',
-      },
+  /**
+   * Queue a transaction validation job immediately.
+   * Bull will retry up to 5 times with exponential back-off (see jobs.module.ts).
+   */
+  async addTransactionValidationJob(
+    payload: TransactionValidationJob,
+  ): Promise<void> {
+    await this.transactionsQueue.add('validate-transaction', payload);
+    this.logger.log(
+      `Queued transaction validation for donation ${payload.donationId} (tx: ${payload.transactionHash})`,
     );
+  }
 
-    // Schedule expiration check every hour (or at every 5 mins too)
-    await this.projectsQueue.add(
-      'check-expired-projects',
-      {},
-      {
-        repeat: { cron: '0 * * * *' },
-        jobId: 'check-expired-projects-repeat',
-      },
+  /**
+   * Retry validation for a specific donation after a custom delay (ms).
+   * Useful when the caller knows the transaction is pending.
+   */
+  async retryTransactionValidation(
+    payload: TransactionValidationJob,
+    delayMs = 30_000,
+  ): Promise<void> {
+    await this.transactionsQueue.add('validate-transaction', payload, {
+      delay: delayMs,
+    });
+    this.logger.log(
+      `Scheduled retry validation for donation ${payload.donationId} in ${delayMs}ms`,
     );
-
-    this.logger.log('Repeatable jobs scheduled:');
-    this.logger.log('- update-funding-totals (every 5 mins)');
-    this.logger.log('- check-expired-projects (every hour)');
   }
 }
