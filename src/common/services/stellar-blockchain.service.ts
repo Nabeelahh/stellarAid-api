@@ -19,6 +19,10 @@ interface StellarTransaction {
   envelope_xdr: string;
   result_xdr: string;
   result_meta_xdr: string;
+  created_at: string;
+  successful: boolean;
+  memo?: string;
+  memo_type?: string;
   tx: {
     source_account: string;
     fee: number;
@@ -37,6 +41,9 @@ interface TransactionVerificationResult {
   asset?: string;
   sourceAccount?: string;
   destinationAccount?: string;
+  projectId?: string;
+  timestamp?: Date;
+  errors?: string[];
   error?: string;
 }
 
@@ -45,6 +52,7 @@ export class StellarBlockchainService {
   private readonly logger = new Logger(StellarBlockchainService.name);
   private readonly horizonUrl: string;
   private readonly stellarNetwork: string;
+  private readonly platformAddresses: Set<string> = new Set<string>();
 
   constructor(private configService: ConfigService) {
     this.horizonUrl = this.configService.get<string>(
@@ -64,7 +72,10 @@ export class StellarBlockchainService {
     if (platformAddresses) {
       platformAddresses
         .split(',')
-        .forEach((addr) => PLATFORM_DISTRIBUTING_ADDRESSES.add(addr.trim()));
+        .forEach((addr) => {
+          PLATFORM_DISTRIBUTING_ADDRESSES.add(addr.trim());
+          this.platformAddresses.add(addr.trim());
+        });
     }
 
     this.logger.log(`Initialized with Horizon URL: ${this.horizonUrl}`);
@@ -76,6 +87,7 @@ export class StellarBlockchainService {
    * @param expectedAmount - Optional expected amount to validate
    * @param expectedAsset - Optional expected asset type to validate
    * @param expectedDestination - Optional expected destination address
+   * @param expectedProjectId - Optional expected project ID from memo
    * @returns TransactionVerificationResult with verification status
    */
   async verifyTransaction(
@@ -83,22 +95,28 @@ export class StellarBlockchainService {
     expectedAmount?: number,
     expectedAsset?: string,
     expectedDestination?: string,
+    expectedProjectId?: string,
   ): Promise<TransactionVerificationResult> {
+    const errors: string[] = [];
+
     // Check cache first
     const cachedResult = this.getCachedResult(transactionHash);
     if (cachedResult) {
       this.logger.log(
         `Using cached verification for transaction ${transactionHash}`,
       );
-      return cachedResult;
+      return { ...cachedResult, errors };
     }
 
     try {
       // Validate hash format before making API call
       if (!this.isValidTransactionHash(transactionHash)) {
+        const errorMsg = 'Invalid transaction hash format';
+        errors.push(errorMsg);
         return {
           isValid: false,
-          error: 'Invalid transaction hash format',
+          error: errorMsg,
+          errors,
         };
       }
 
@@ -114,21 +132,27 @@ export class StellarBlockchainService {
 
       if (!response.ok) {
         if (response.status === 404) {
+          const errorMsg = 'Transaction not found on the Stellar blockchain';
+          errors.push(errorMsg);
           this.logger.warn(
             `Transaction ${transactionHash} not found on blockchain`,
           );
           return {
             isValid: false,
-            error: 'Transaction not found on the Stellar blockchain',
+            error: errorMsg,
+            errors,
           };
         }
 
+        const errorMsg = `Horizon API returned ${response.status}`;
+        errors.push(errorMsg);
         this.logger.error(
           `Horizon API error: ${response.status} ${response.statusText}`,
         );
         return {
           isValid: false,
-          error: `Horizon API returned ${response.status}`,
+          error: errorMsg,
+          errors,
         };
       }
 
@@ -136,12 +160,15 @@ export class StellarBlockchainService {
 
       // Verify transaction has successful result
       if (!this.isSuccessfulTransaction(transaction)) {
+        const errorMsg = 'Transaction did not execute successfully on the blockchain';
+        errors.push(errorMsg);
         this.logger.warn(
           `Transaction ${transactionHash} did not execute successfully`,
         );
         return {
           isValid: false,
-          error: 'Transaction did not execute successfully on the blockchain',
+          error: errorMsg,
+          errors,
         };
       }
 
@@ -149,11 +176,20 @@ export class StellarBlockchainService {
       const parsedDetails =
         await this.parseTransactionOperations(transactionHash);
       if (!parsedDetails) {
+        const errorMsg = 'Failed to parse transaction operations';
+        errors.push(errorMsg);
         return {
           isValid: false,
-          error: 'Failed to parse transaction operations',
+          error: errorMsg,
+          errors,
         };
       }
+
+      // Extract memo (project ID)
+      const projectId = this.extractProjectIdFromMemo(transaction.memo);
+
+      // Get transaction timestamp
+      const timestamp = new Date(transaction.created_at);
 
       // Validate asset type if expected
       if (expectedAsset && parsedDetails.asset) {
@@ -161,12 +197,15 @@ export class StellarBlockchainService {
         const normalizedActual = parsedDetails.asset.toUpperCase();
 
         if (normalizedExpected !== normalizedActual) {
+          const errorMsg = `Asset type mismatch: expected ${normalizedExpected}, got ${normalizedActual}`;
+          errors.push(errorMsg);
           this.logger.warn(
             `Asset mismatch: expected ${normalizedExpected}, got ${normalizedActual}`,
           );
           return {
             isValid: false,
-            error: `Asset type mismatch: expected ${normalizedExpected}, got ${normalizedActual}`,
+            error: errorMsg,
+            errors,
           };
         }
       }
@@ -177,12 +216,15 @@ export class StellarBlockchainService {
         const amountDiff = Math.abs(parsedDetails.amount - expectedAmount);
 
         if (amountDiff > tolerance) {
+          const errorMsg = `Amount mismatch: expected ${expectedAmount}, got ${parsedDetails.amount}`;
+          errors.push(errorMsg);
           this.logger.warn(
             `Amount mismatch: expected ${expectedAmount}, got ${parsedDetails.amount}`,
           );
           return {
             isValid: false,
-            error: `Amount mismatch: expected ${expectedAmount}, got ${parsedDetails.amount}`,
+            error: errorMsg,
+            errors,
           };
         }
       }
@@ -193,12 +235,48 @@ export class StellarBlockchainService {
           expectedDestination.toLowerCase() !==
           parsedDetails.destinationAccount.toLowerCase()
         ) {
+          const errorMsg = `Destination address mismatch`;
+          errors.push(errorMsg);
           this.logger.warn(
             `Destination mismatch: expected ${expectedDestination}, got ${parsedDetails.destinationAccount}`,
           );
           return {
             isValid: false,
-            error: `Destination address mismatch`,
+            error: errorMsg,
+            errors,
+          };
+        }
+      }
+
+      // Validate platform destination (check if payment goes to platform wallet)
+      if (
+        parsedDetails.destinationAccount &&
+        !this.isPlatformAddress(parsedDetails.destinationAccount)
+      ) {
+        const errorMsg = 'Transaction destination is not a platform wallet';
+        errors.push(errorMsg);
+        this.logger.warn(
+          `Transaction sent to non-platform address: ${parsedDetails.destinationAccount}`,
+        );
+        return {
+          isValid: false,
+          error: errorMsg,
+          errors,
+        };
+      }
+
+      // Validate project ID from memo if expected
+      if (expectedProjectId && projectId) {
+        if (projectId !== expectedProjectId) {
+          const errorMsg = `Project ID mismatch: expected ${expectedProjectId}, got ${projectId}`;
+          errors.push(errorMsg);
+          this.logger.warn(
+            `Project ID mismatch: expected ${expectedProjectId}, got ${projectId}`,
+          );
+          return {
+            isValid: false,
+            error: errorMsg,
+            errors,
           };
         }
       }
@@ -210,6 +288,9 @@ export class StellarBlockchainService {
         asset: parsedDetails.asset,
         sourceAccount: parsedDetails.sourceAccount,
         destinationAccount: parsedDetails.destinationAccount,
+        projectId,
+        timestamp,
+        errors: [],
       };
 
       // Cache the result
@@ -218,12 +299,15 @@ export class StellarBlockchainService {
       this.logger.log(`Transaction ${transactionHash} verified successfully`);
       return result;
     } catch (error) {
+      const errorMsg = 'Failed to verify transaction on blockchain';
+      errors.push(errorMsg);
       this.logger.error(
         `Error verifying transaction: ${error instanceof Error ? error.message : String(error)}`,
       );
       return {
         isValid: false,
-        error: 'Failed to verify transaction on blockchain',
+        error: errorMsg,
+        errors,
       };
     }
   }
@@ -259,9 +343,17 @@ export class StellarBlockchainService {
       // Find payment operations
       for (const op of operations) {
         if (op.type === 'payment' || op.type_i === 1) {
+          // Determine asset type
+          let asset = 'XLM'; // Default to native asset
+          if (op.asset_type === 'native') {
+            asset = 'XLM';
+          } else if (op.asset_code) {
+            asset = op.asset_code.toUpperCase();
+          }
+
           return {
             amount: parseFloat(op.amount),
-            asset: op.asset || 'XLM', // Native asset is XLM
+            asset,
             sourceAccount: op.from,
             destinationAccount: op.to,
           };
@@ -287,6 +379,40 @@ export class StellarBlockchainService {
    */
   getSupportedAssets(): string[] {
     return [...SUPPORTED_ASSETS];
+  }
+
+  /**
+   * Extract project ID from transaction memo
+   * Expected format: "PROJECT_ID" or "donation:PROJECT_ID"
+   */
+  private extractProjectIdFromMemo(memo?: string): string | undefined {
+    if (!memo) return undefined;
+
+    // Try to extract project ID from memo
+    const patterns = [
+      /^donation:(.+)$/,  // Format: donation:PROJECT_ID
+      /^(.+)$/,            // Format: PROJECT_ID
+    ];
+
+    for (const pattern of patterns) {
+      const match = memo.match(pattern);
+      if (match && match[1]) {
+        const projectId = match[1].trim();
+        // Basic UUID validation
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(projectId)) {
+          return projectId;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Check if address belongs to platform
+   */
+  private isPlatformAddress(address: string): boolean {
+    return this.platformAddresses.has(address);
   }
 
   /**

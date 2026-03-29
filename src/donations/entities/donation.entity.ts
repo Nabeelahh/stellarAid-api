@@ -47,6 +47,9 @@ export class Donation {
   @Column({ default: false })
   isAnonymous: boolean;
 
+  @Column({ default: true })
+  verified: boolean;
+
   @CreateDateColumn()
   createdAt: Date;
 }
