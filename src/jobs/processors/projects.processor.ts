@@ -17,7 +17,7 @@ export interface TransactionValidationJob {
   expectedAsset: string;
   destinationAddress: string;
 }
-
+// jj
 @Processor('transactions')
 export class TransactionsJobProcessor {
   private readonly logger = new Logger(TransactionsJobProcessor.name);
