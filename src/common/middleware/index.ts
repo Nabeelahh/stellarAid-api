@@ -1,1 +1,1 @@
-// Middleware will be exported here
+export * from './request-logger.middleware';

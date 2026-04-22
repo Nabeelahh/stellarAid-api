@@ -74,3 +74,4 @@ generated/
 .yarn/install-state.gz
 
 /generated/prisma
+logs/
