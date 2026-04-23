@@ -173,22 +173,41 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
+    // Check if token has already been used (security breach detection)
+    if (storedToken.isUsed) {
+      // Security breach: token reuse detected
+      // Invalidate all refresh tokens for this user
+      await this.prisma.refreshToken.deleteMany({
+        where: { userId: storedToken.userId },
+      });
+      throw new UnauthorizedException('Security breach detected: token reuse');
+    }
+
     // Check if token is expired
     if (storedToken.expiresAt < new Date()) {
-      // Delete expired token
-      await this.prisma.refreshToken.delete({
+      // Mark token as used to prevent reuse
+      await this.prisma.refreshToken.update({
         where: { id: storedToken.id },
+        data: { isUsed: true },
       });
       throw new UnauthorizedException('Refresh token has expired');
     }
 
+    // Check if user is still active
+    if (storedToken.user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('User account is not active');
+    }
+
+    // Mark the old token as used (rotation)
+    await this.prisma.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { isUsed: true },
+    });
+
     // Generate new tokens
     const tokens = await this.generateTokens(storedToken.user);
 
-    // Delete old refresh token and store new one
-    await this.prisma.refreshToken.delete({
-      where: { id: storedToken.id },
-    });
+    // Store new refresh token
     await this.storeRefreshToken(storedToken.user.id, tokens.refreshToken);
 
     return {
@@ -198,13 +217,18 @@ export class AuthService {
   }
 
   async logout(userId: string, refreshToken: string) {
-    // Delete refresh token from database
-    await this.prisma.refreshToken.deleteMany({
+    // Delete specific refresh token from database
+    const deletedCount = await this.prisma.refreshToken.deleteMany({
       where: {
         userId,
         token: refreshToken,
+        isUsed: false, // Only delete unused tokens
       },
     });
+
+    if (deletedCount.count === 0) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
     return { message: 'Logout successful' };
   }
@@ -246,14 +270,13 @@ export class AuthService {
       }
     }
 
-    // Hash token before storing
-    const hashedToken = await bcrypt.hash(token, 10);
-
+    // Store token as plain text (it's a cryptographically secure random string)
     await this.prisma.refreshToken.create({
       data: {
-        token: hashedToken,
+        token,
         userId,
         expiresAt,
+        isUsed: false,
       },
     });
   }
