@@ -34,7 +34,7 @@ export class AuthController {
     return this.authService.verifyEmail(token);
   }
 
-  @Post('refresh-token')
+  @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refreshToken(@Body('refreshToken') refreshToken: string) {
     return this.authService.refreshToken(refreshToken);
