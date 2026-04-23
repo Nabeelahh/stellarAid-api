@@ -33,6 +33,9 @@ model User {
   password         String
   firstName        String?
   lastName         String?
+  country          String?
+  bio              String?
+  avatar           String?
   role             UserRole        @default(USER)
   status           UserStatus      @default(PENDING)
   isEmailVerified  Boolean         @default(false)

@@ -2,17 +2,20 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcryptjs';
 import { EmailService } from './email.service';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 export interface UserProfileResponse {
   id: string;
   email: string;
   firstName: string | null;
   lastName: string | null;
+  country: string | null;
+  bio: string | null;
+  avatar: string | null;
   role: string;
   status: string;
   isEmailVerified: boolean;
@@ -50,6 +53,9 @@ export class UsersService {
       email,
       firstName,
       lastName,
+      country,
+      bio,
+      avatar,
       role,
       status,
       isEmailVerified,
@@ -64,6 +70,9 @@ export class UsersService {
       email,
       firstName,
       lastName,
+      country,
+      bio,
+      avatar,
       role,
       status,
       isEmailVerified,
@@ -80,7 +89,6 @@ export class UsersService {
     currentPassword: string,
     newPassword: string,
   ): Promise<ChangePasswordResponse> {
-    // Get user with password
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -89,7 +97,6 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    // Verify current password
     const isCurrentPasswordValid = await bcrypt.compare(
       currentPassword,
       user.password,
@@ -98,30 +105,24 @@ export class UsersService {
       throw new BadRequestException('Current password is incorrect');
     }
 
-    // Hash new password
     const hashedNewPassword = await bcrypt.hash(newPassword, 10);
 
-    // Begin transaction: update password and invalidate all refresh tokens
     await this.prisma.$transaction([
-      // Update password
       this.prisma.user.update({
         where: { id: userId },
         data: { password: hashedNewPassword },
       }),
-      // Delete all refresh tokens (invalidate all sessions)
       this.prisma.refreshToken.deleteMany({
         where: { userId },
       }),
     ]);
 
-    // Send confirmation email (fire and forget, don't block response)
     try {
       await this.emailService.sendPasswordChangeConfirmation(
         user.email,
         userId,
       );
     } catch (error) {
-      // Log error but don't fail the request
       console.error(
         'Failed to send password change confirmation email:',
         error,
@@ -131,15 +132,101 @@ export class UsersService {
     return { message: 'Password changed successfully' };
   }
 
+  async updateProfile(
+    userId: string,
+    updateData: UpdateUserDto,
+  ): Promise<UserProfileResponse> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (
+      updateData.walletAddress &&
+      updateData.walletAddress !== user.walletAddress
+    ) {
+      const existingWallet = await this.prisma.user.findUnique({
+        where: { walletAddress: updateData.walletAddress },
+      });
+      if (existingWallet) {
+        throw new BadRequestException('Wallet address is already in use');
+      }
+    }
+
+    const allowedFields = [
+      'firstName',
+      'lastName',
+      'country',
+      'bio',
+      'avatar',
+      'walletAddress',
+    ];
+    const updatePayload: any = {};
+
+    for (const field of allowedFields) {
+      if (updateData[field as keyof UpdateUserDto] !== undefined) {
+        updatePayload[field] = updateData[field as keyof UpdateUserDto];
+      }
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: updatePayload,
+    });
+
+    const profileCompletion = this.calculateProfileCompletion(updatedUser);
+
+    const {
+      id,
+      email,
+      firstName,
+      lastName,
+      country,
+      bio,
+      avatar,
+      role,
+      status,
+      isEmailVerified,
+      walletAddress,
+      kycStatus,
+      createdAt,
+      updatedAt,
+    } = updatedUser;
+
+    return {
+      id,
+      email,
+      firstName,
+      lastName,
+      country,
+      bio,
+      avatar,
+      role,
+      status,
+      isEmailVerified,
+      walletAddress,
+      kycStatus,
+      createdAt,
+      updatedAt,
+      profileCompletion,
+    };
+  }
+
   private calculateProfileCompletion(user: any): number {
     const fields = [
       { name: 'firstName', weight: 0.15 },
       { name: 'lastName', weight: 0.15 },
-      { name: 'isEmailVerified', weight: 0.2 },
-      { name: 'walletAddress', weight: 0.3 },
+      { name: 'country', weight: 0.1 },
+      { name: 'bio', weight: 0.1 },
+      { name: 'avatar', weight: 0.1 },
+      { name: 'isEmailVerified', weight: 0.1 },
+      { name: 'walletAddress', weight: 0.15 },
       {
         name: 'kycStatus',
-        weight: 0.2,
+        weight: 0.15,
         completedWhen: (val: any) => val === 'VERIFIED' || val === 'PENDING',
       },
     ];
