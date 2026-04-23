@@ -8,7 +8,7 @@ import { RequestLoggerMiddleware } from './common/middleware';
 import { winstonConfig } from './config/winston.config';
 import { AppConfigurationModule } from './config/app-configuration.module';
 import { AuthModule } from './modules/auth/auth.module';
-import { JwtAuthGuard } from './modules/auth';
+import { JwtAuthGuard, RolesGuard } from './modules/auth';
 
 @Module({
   imports: [
@@ -21,6 +21,9 @@ import { JwtAuthGuard } from './modules/auth';
   providers: [AppService, {
     provide: APP_GUARD,
     useClass: JwtAuthGuard,
+  }, {
+    provide: APP_GUARD,
+    useClass: RolesGuard,
   }],
 })
 export class AppModule implements NestModule {
