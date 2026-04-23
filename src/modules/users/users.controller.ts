@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Post, Body } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 interface JwtUser {
   id: string;
@@ -13,5 +14,17 @@ export class UsersController {
   @Get('profile')
   async getProfile(@CurrentUser() user: JwtUser) {
     return this.usersService.getUserProfile(user.id);
+  }
+
+  @Post('change-password')
+  async changePassword(
+    @CurrentUser() user: JwtUser,
+    @Body() changePasswordDto: ChangePasswordDto,
+  ) {
+    return this.usersService.changePassword(
+      user.id,
+      changePasswordDto.currentPassword,
+      changePasswordDto.newPassword,
+    );
   }
 }
