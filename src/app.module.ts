@@ -8,6 +8,7 @@ import { RequestLoggerMiddleware } from './common/middleware';
 import { winstonConfig } from './config/winston.config';
 import { AppConfigurationModule } from './config/app-configuration.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { UsersModule } from './modules/users/users.module';
 import { JwtAuthGuard, RolesGuard } from './modules/auth';
 
 @Module({
@@ -15,16 +16,21 @@ import { JwtAuthGuard, RolesGuard } from './modules/auth';
     AppConfigurationModule,
     PrismaModule,
     AuthModule,
+    UsersModule,
     WinstonModule.forRoot(winstonConfig),
   ],
   controllers: [AppController],
-  providers: [AppService, {
-    provide: APP_GUARD,
-    useClass: JwtAuthGuard,
-  }, {
-    provide: APP_GUARD,
-    useClass: RolesGuard,
-  }],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: JwtAuthGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: RolesGuard,
+    },
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
