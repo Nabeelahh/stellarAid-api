@@ -48,6 +48,10 @@ model User {
   emailTokens      EmailToken[]
 
   @@map("users")
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
+  @@index([kycStatus])
 }
 
 model RefreshToken {
