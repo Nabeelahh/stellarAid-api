@@ -37,6 +37,8 @@ model User {
   status           UserStatus      @default(PENDING)
   isEmailVerified  Boolean         @default(false)
   emailVerifiedAt  DateTime?
+  walletAddress    String?         @unique
+  kycStatus        String?         @default("NOT_SUBMITTED")
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   refreshTokens    RefreshToken[]

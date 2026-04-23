@@ -1,1 +1,2 @@
-// Modules will be exported hereexport * from './auth';
+export * from './auth';
+export * from './users';
