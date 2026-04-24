@@ -5,8 +5,10 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
 import { EmailService } from './email.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { KycStatus } from '../../../generated/prisma';
 
 export interface UserProfileResponse {
   id: string;
@@ -213,6 +215,74 @@ export class UsersService {
       updatedAt,
       profileCompletion,
     };
+  }
+
+  // ── Issue #141: Forgot / Reset Password ──────────────────────────────────
+
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    // Always return success to avoid user enumeration
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (user) {
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+      await this.prisma.emailToken.deleteMany({
+        where: { userId: user.id, type: 'PASSWORD_RESET' },
+      });
+
+      await this.prisma.emailToken.create({
+        data: { token, userId: user.id, type: 'PASSWORD_RESET', expiresAt },
+      });
+
+      await this.emailService.sendPasswordResetEmail(email, token);
+    }
+    return { message: 'If that email is registered, a reset link has been sent.' };
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<{ message: string }> {
+    const emailToken = await this.prisma.emailToken.findUnique({
+      where: { token },
+      include: { user: true },
+    });
+
+    if (!emailToken || emailToken.type !== 'PASSWORD_RESET') {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+    if (emailToken.expiresAt < new Date()) {
+      await this.prisma.emailToken.delete({ where: { id: emailToken.id } });
+      throw new BadRequestException('Reset token has expired');
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: emailToken.userId }, data: { password: hashed } }),
+      this.prisma.emailToken.delete({ where: { id: emailToken.id } }),
+      this.prisma.refreshToken.deleteMany({ where: { userId: emailToken.userId } }),
+    ]);
+
+    return { message: 'Password reset successfully' };
+  }
+
+  // ── Issue #142: KYC Submit ────────────────────────────────────────────────
+
+  async submitKyc(userId: string, documentUrl: string): Promise<{ message: string }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.kycStatus === KycStatus.APPROVED) {
+      throw new BadRequestException('KYC already approved');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        kycStatus: KycStatus.PENDING,
+        kycDocumentUrl: documentUrl,
+        kycSubmittedAt: new Date(),
+      },
+    });
+
+    return { message: 'KYC submitted successfully' };
   }
 
   private calculateProfileCompletion(user: any): number {
