@@ -9,6 +9,8 @@ import { winstonConfig } from './config/winston.config';
 import { AppConfigurationModule } from './config/app-configuration.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { ProjectsModule } from './modules/projects/projects.module';
 import { JwtAuthGuard, RolesGuard } from './modules/auth';
 
 @Module({
@@ -17,6 +19,8 @@ import { JwtAuthGuard, RolesGuard } from './modules/auth';
     PrismaModule,
     AuthModule,
     UsersModule,
+    AdminModule,
+    ProjectsModule,
     WinstonModule.forRoot(winstonConfig),
   ],
   controllers: [AppController],
