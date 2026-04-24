@@ -38,6 +38,7 @@ enum ProjectStatus {
   APPROVED
   REJECTED
   ACTIVE
+  PAUSED
   COMPLETED
 }
 
@@ -113,27 +114,43 @@ model EmailToken {
 
 // Issue #144: Projects model
 model Project {
-  id              String          @id @default(uuid())
+  id              String                 @id @default(uuid())
   title           String
   description     String
   category        ProjectCategory
-  status          ProjectStatus   @default(PENDING)
-  goalAmount      Decimal         @db.Decimal(18, 7)
-  raisedAmount    Decimal         @default(0) @db.Decimal(18, 7)
+  status          ProjectStatus          @default(PENDING)
+  goalAmount      Decimal                @db.Decimal(18, 7)
+  raisedAmount    Decimal                @default(0) @db.Decimal(18, 7)
   imageUrl        String?
   walletAddress   String?
   creatorId       String
-  creator         User            @relation(fields: [creatorId], references: [id])
+  creator         User                   @relation(fields: [creatorId], references: [id])
   startDate       DateTime?
   endDate         DateTime?
+  pausedAt        DateTime?
   approvedAt      DateTime?
   rejectedAt      DateTime?
   rejectionReason String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  statusHistory   ProjectStatusHistory[]
 
   @@map("projects")
   @@index([creatorId])
   @@index([status])
   @@index([category])
+}
+
+model ProjectStatusHistory {
+  id        String        @id @default(uuid())
+  projectId String
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  oldStatus ProjectStatus
+  newStatus ProjectStatus
+  reason    String?
+  createdAt DateTime      @default(now())
+
+  @@map("project_status_history")
+  @@index([projectId])
+  @@index([createdAt])
 }
