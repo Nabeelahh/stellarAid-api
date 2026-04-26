@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { ProjectStatus } from '../../../generated/prisma';
+import { ProjectStatus } from '../../../../generated/prisma';
 
 interface StatusTransition {
   from: ProjectStatus;
