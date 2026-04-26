@@ -1,12 +1,28 @@
-import { Controller, Get, Post, Patch, Param, Body, UseGuards } from '@nestjs/common';
+import { 
+  Controller, 
+  Get, 
+  Post, 
+  Patch, 
+  Delete, 
+  Param, 
+  Body, 
+  UseGuards, 
+  UseInterceptors, 
+  UploadedFile,
+  ParseUUIDPipe,
+  ForbiddenException 
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ProjectsService } from './projects.service';
+import { ImageUploadService } from './services/image-upload.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { PauseProjectDto } from './dto/pause-project.dto';
 import { ResumeProjectDto } from './dto/resume-project.dto';
 import { CompleteProjectDto } from './dto/complete-project.dto';
+import { UploadImageDto, ImageUploadResponseDto } from './dto/upload-image.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { UserRole } from '../../generated/prisma';
+import { UserRole } from '../../../generated/prisma';
 
 interface JwtUser {
   id: string;
@@ -15,7 +31,10 @@ interface JwtUser {
 
 @Controller('projects')
 export class ProjectsController {
-  constructor(private readonly projectsService: ProjectsService) {}
+  constructor(
+    private readonly projectsService: ProjectsService,
+    private readonly imageUploadService: ImageUploadService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard)
@@ -66,5 +85,67 @@ export class ProjectsController {
     @Body() dto: CompleteProjectDto,
   ) {
     return this.projectsService.completeProject(id, user.id, user.role, dto);
+  }
+
+  @Post(':id/images')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('image'))
+  async uploadImage(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @CurrentUser() user: JwtUser,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: UploadImageDto,
+  ): Promise<ImageUploadResponseDto> {
+    try {
+      // Verify user owns the project or is admin
+      const project = await this.projectsService.findOne(projectId);
+      if (project.creatorId !== user.id && user.role !== UserRole.ADMIN) {
+        throw new ForbiddenException('You can only upload images to your own projects');
+      }
+
+      const image = await this.imageUploadService.uploadImage(projectId, file, dto.altText);
+      
+      return {
+        success: true,
+        message: 'Image uploaded successfully',
+        image: {
+          id: image.id,
+          url: image.url,
+          altText: image.altText,
+          fileSize: image.fileSize,
+          mimeType: image.mimeType,
+          fileName: image.fileName,
+          createdAt: image.createdAt,
+          updatedAt: image.updatedAt,
+        },
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        message: error.message || 'Failed to upload image',
+      };
+    }
+  }
+
+  @Get(':id/images')
+  async getProjectImages(@Param('id', ParseUUIDPipe) projectId: string) {
+    return this.imageUploadService.getProjectImages(projectId);
+  }
+
+  @Delete(':id/images/:imageId')
+  @UseGuards(JwtAuthGuard)
+  async deleteImage(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    // Verify user owns the project or is admin
+    const project = await this.projectsService.findOne(projectId);
+    if (project.creatorId !== user.id && user.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('You can only delete images from your own projects');
+    }
+
+    await this.imageUploadService.deleteImage(projectId, imageId);
+    return { success: true, message: 'Image deleted successfully' };
   }
 }

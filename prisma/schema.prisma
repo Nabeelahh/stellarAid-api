@@ -156,6 +156,7 @@ model Project {
   updatedAt       DateTime               @updatedAt
   statusHistory   ProjectStatusHistory[]
   donations       Donation[]
+  images          ProjectImage[]
 
   @@map("projects")
   @@index([creatorId])
@@ -192,6 +193,23 @@ model ProjectStatusHistory {
   createdAt DateTime      @default(now())
 
   @@map("project_status_history")
+  @@index([projectId])
+  @@index([createdAt])
+}
+
+model ProjectImage {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url       String
+  altText   String?
+  fileSize  Int      // Size in bytes
+  mimeType  String   // e.g., 'image/jpeg', 'image/png', 'image/webp'
+  fileName  String   // Original filename
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("project_images")
   @@index([projectId])
   @@index([createdAt])
 }
