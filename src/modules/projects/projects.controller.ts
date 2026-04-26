@@ -11,7 +11,7 @@ import {
   UploadedFile,
   ParseUUIDPipe,
   ForbiddenException,
-  Query 
+  Query
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProjectsService } from './projects.service';
@@ -22,6 +22,7 @@ import { ResumeProjectDto } from './dto/resume-project.dto';
 import { CompleteProjectDto } from './dto/complete-project.dto';
 import { SearchProjectsDto } from './dto/search-projects.dto';
 import { UploadImageDto, ImageUploadResponseDto } from './dto/upload-image.dto';
+import { GetProjectAnalyticsDto, ProjectAnalyticsResponseDto } from './dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserRole } from '../../../generated/prisma';
@@ -57,6 +58,16 @@ export class ProjectsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.projectsService.findOne(id);
+  }
+
+  @Get(':id/analytics')
+  @UseGuards(JwtAuthGuard)
+  async getAnalytics(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @CurrentUser() user: JwtUser,
+    @Query() query: GetProjectAnalyticsDto,
+  ): Promise<ProjectAnalyticsResponseDto> {
+    return this.projectsService.getProjectAnalytics(projectId, user.id, user.role, query);
   }
 
   @Get(':id/status-history')

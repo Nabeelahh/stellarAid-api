@@ -5,9 +5,11 @@ import { PauseProjectDto } from './dto/pause-project.dto';
 import { ResumeProjectDto } from './dto/resume-project.dto';
 import { CompleteProjectDto } from './dto/complete-project.dto';
 import { SearchProjectsDto } from './dto/search-projects.dto';
+import { GetProjectAnalyticsDto, ProjectAnalyticsResponseDto } from './dto';
 import { ProjectStatus, UserRole, AuditActionType } from '../../../generated/prisma';
 import { validateStatusTransition, isProjectAcceptingDonations } from './utils/status-transition.validator';
 import { EmailService } from '../users/email.service';
+import { Decimal } from '@prisma/client/runtime/library';
 
 @Injectable()
 export class ProjectsService {
@@ -423,6 +425,187 @@ export class ProjectsService {
       where: { projectId },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  async getProjectAnalytics(
+    projectId: string,
+    userId: string,
+    userRole: UserRole,
+    query: GetProjectAnalyticsDto,
+  ): Promise<ProjectAnalyticsResponseDto> {
+    // Check authorization
+    const { project } = await this.checkAuthorization(projectId, userId, userRole);
+
+    const { startDate, endDate, anonymizeTopDonors = false } = query;
+
+    // Set default date range (last 30 days if not provided)
+    const now = new Date();
+    const defaultStartDate = startDate ? new Date(startDate) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const defaultEndDate = endDate ? new Date(endDate) : now;
+
+    // Build date filter
+    const dateFilter = {
+      createdAt: {
+        gte: defaultStartDate,
+        lte: defaultEndDate,
+      },
+    };
+
+    // Get all donations for the project within date range
+    const donations = await this.prisma.donation.findMany({
+      where: {
+        projectId,
+        ...dateFilter,
+      },
+      include: {
+        donor: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    // Calculate total donations and amount
+    const totalDonations = donations.length;
+    const totalAmount = donations.reduce((sum, donation) => sum.add(donation.amount), new Decimal(0));
+    const uniqueDonors = new Set(donations.map(d => d.donorId)).size;
+    const averageDonation = totalDonations > 0 ? totalAmount.div(totalDonations) : new Decimal(0);
+
+    // Calculate funding velocity (donations per day)
+    const daysDiff = Math.max(1, Math.ceil((defaultEndDate.getTime() - defaultStartDate.getTime()) / (24 * 60 * 60 * 1000)));
+    const fundingVelocity = totalDonations / daysDiff;
+
+    // Calculate daily trends
+    const dailyTrends = this.calculateDailyTrends(donations, defaultStartDate, defaultEndDate);
+
+    // Calculate weekly trends
+    const weeklyTrends = this.calculateWeeklyTrends(donations, defaultStartDate, defaultEndDate);
+
+    // Calculate top donors
+    const topDonors = this.calculateTopDonors(donations, anonymizeTopDonors);
+
+    return {
+      totalDonations,
+      totalAmount,
+      uniqueDonors,
+      averageDonation,
+      fundingVelocity,
+      donationTrends: {
+        daily: dailyTrends,
+        weekly: weeklyTrends,
+      },
+      topDonors,
+      dateRange: {
+        startDate: defaultStartDate.toISOString().split('T')[0],
+        endDate: defaultEndDate.toISOString().split('T')[0],
+      },
+    };
+  }
+
+  private calculateDailyTrends(donations: any[], startDate: Date, endDate: Date) {
+    const dailyMap = new Map<string, { amount: any; count: number }>();
+
+    // Initialize all days in range
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().spli
+      dailyMap.set(dateStr, { amount: new this.prisma.Decimal(0), count: 0 });
+    }
+
+    // Aggregate donations by day
+    donations.forEach(donation => {
+      const dateStr = donation.createdAt.toISOString().split('T')[0];
+      if (dailyMap.has(dateStr)) {
+        const current = dailyMap.get(dateStr)!;
+        dailyMap.set(dateStr, {
+          amount: current.amount.add(donation.amount),
+          count: current.count + 1,
+        });
+      }
+    });
+
+    return Array.from(dailyMap.entries()).map(([date, data]) => ({
+      date,
+      amount: data.amount,
+      count: data.count,
+    }));
+  }
+
+  private calculateWeeklyTrends(donations: any[], startDate: Date, endDate: Date) {
+    const weeklyMap = new Map<string, { amount: any; count: number }>();
+
+    // Initialize weeks in range
+    const startWeek = this.getWeekString(startDate);
+    const endWeek = this.getWeekString(endDate);
+    
+    let currentWeek = startWeek;
+    while (currentWeek <= endWeek) {
+      weeklyMap.set(currentWeek, { amount: new this.prisma.Decimal(0), count: 0 });
+      // Move to next week
+      const [year, week] = currentWeek.split('-W').map(Number);
+      const nextWeekDate = new Date(year, 0, (week + 1) * 7);
+      currentWeek = this.getWeekString(nextWeekDate);
+      if (currentWeek > endWeek) break;
+    }
+
+    // Aggregate donations by week
+    donations.forEach(donation => {
+      const weekStr = this.getWeekString(donation.createdAt);
+      if (weeklyMap.has(weekStr)) {
+        const current = weeklyMap.get(weekStr)!;
+        weeklyMap.set(weekStr, {
+          amount: current.amount.add(donation.amount),
+          count: current.count + 1,
+        });
+      }
+    });
+
+    return Array.from(weeklyMap.entries()).map(([week, data]) => ({
+      week,
+      amount: data.amount,
+      count: data.count,
+    }));
+  }
+
+  private getWeekString(date: Date): string {
+    const year = date.getFullYear();
+    const week = Math.ceil((date.getTime() - new Date(year, 0, 1).getTime()) / (7 * 24 * 60 * 60 * 1000));
+    return `${year}-W${week.toString().padStart(2, '0')}`;
+  }
+
+  private calculateTopDonors(donations: any[], anonymize: boolean) {
+    const donorMap = new Map<string, { totalAmount: any; count: number; donor: any }>();
+
+    donations.forEach(donation => {
+      const donorId = donation.donorId;
+      if (donorMap.has(donorId)) {
+        const current = donorMap.get(donorId)!;
+        donorMap.set(donorId, {
+          totalAmount: current.totalAmount.add(donation.amount),
+          count: current.count + 1,
+          donor: donation.donor,
+        });
+      } else {
+        donorMap.set(donorId, {
+          totalAmount: donation.amount,
+          count: 1,
+          donor: donation.donor,
+        });
+      }
+    });
+
+    return Array.from(donorMap.values())
+      .sort((a, b) => b.totalAmount.sub(a.totalAmount).toNumber())
+      .slice(0, 10)
+      .map(d => ({
+        donorId: anonymize ? undefined : d.donor.id,
+        donorName: anonymize ? undefined : `${d.donor.firstName || ''} ${d.donor.lastName || ''}`.trim(),
+        totalAmount: d.totalAmount,
+        donationCount: d.count,
+      }));
   }
 
   async approveProject(projectId: string, adminId: string, remarks?: string) {
